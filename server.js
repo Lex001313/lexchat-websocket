@@ -6,48 +6,65 @@ const app = express();
 const server = createServer(app);
 const PORT = process.env.PORT || 10000;
 
-// Socket.IO с правильной настройкой для Render
 const io = new Server(server, {
   cors: {
-    origin: "*", // Настройте под свой домен
+    origin: "*",
     methods: ["GET", "POST"],
     credentials: true
   },
-  // Важные настройки для стабильности на Render [citation:1]
   pingTimeout: 60000,
   pingInterval: 25000,
   transports: ['websocket', 'polling'],
-  allowEIO3: true,
-  // Включение восстановления состояния соединения [citation:8]
   connectionStateRecovery: {
-    maxDisconnectionDuration: 2 * 60 * 1000, // 2 минуты
+    maxDisconnectionDuration: 2 * 60 * 1000,
     skipMiddlewares: true,
   }
 });
 
-io.on('connection', (socket) => {
-  console.log('Клиент подключен:', socket.id);
-  
-  // Информация о восстановлении
-  if (socket.recovered) {
-    console.log('✅ Соединение восстановлено');
-  }
+const onlineUsers = new Map();
 
-  socket.on('message', (data) => {
-    console.log('Получено:', data);
-    io.emit('message', data);
+io.on('connection', (socket) => {
+  console.log('✅ Клиент подключен:', socket.id);
+  
+  let userPhone = null;
+
+  socket.on('register', (data) => {
+    userPhone = data.phone;
+    onlineUsers.set(userPhone, socket.id);
+    console.log(`📝 Зарегистрирован: ${userPhone}`);
+    io.emit('user_status', { phone: userPhone, is_online: true });
   });
 
-  socket.on('disconnect', (reason) => {
-    console.log('Клиент отключен:', socket.id, reason);
+  socket.on('send_message', (data) => {
+    console.log('📨 Сообщение от', data.from);
+    
+    if (data.type === 'private' && data.to) {
+      const targetSocketId = onlineUsers.get(data.to);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('new_message', data);
+      }
+    }
+    
+    socket.emit('message_sent', { id: Date.now(), ...data });
+  });
+
+  socket.on('ping', () => {
+    socket.emit('pong');
+  });
+
+  socket.on('disconnect', () => {
+    console.log('❌ Отключен:', socket.id);
+    if (userPhone) {
+      onlineUsers.delete(userPhone);
+      io.emit('user_status', { phone: userPhone, is_online: false });
+    }
   });
 });
 
-// Health check для Render
 app.get('/healthz', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+  res.status(200).json({ status: 'ok', connections: io.engine.clientsCount });
 });
 
 server.listen(PORT, () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
