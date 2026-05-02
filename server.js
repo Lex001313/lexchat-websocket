@@ -44,7 +44,7 @@ io.on('connection', (socket) => {
 });
 
 // Health check для Render
-app.get('/health', (req, res) => {
+app.get('/healthz', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
