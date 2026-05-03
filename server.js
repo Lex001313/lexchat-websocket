@@ -1,12 +1,78 @@
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
+const https = require('https');
+const http = require('http');
 
 const app = express();
 const server = createServer(app);
 const PORT = process.env.PORT || 10000;
 
+// Хранилище онлайн пользователей
 const onlineUsers = new Map();
+
+// Функция запроса к api.php на вашем хостинге
+function callApi(endpoint, params = {}) {
+    return new Promise((resolve, reject) => {
+        const url = new URL('https://lexchat.rf.gd/api.php');
+        url.searchParams.append('action', endpoint);
+        for (const [key, value] of Object.entries(params)) {
+            url.searchParams.append(key, value);
+        }
+        
+        const protocol = url.protocol === 'https:' ? https : http;
+        const options = {
+            hostname: url.hostname,
+            path: url.pathname + url.search,
+            method: 'GET',
+            headers: {
+                'User-Agent': 'LexChat-WebSocket/1.0'
+            },
+            timeout: 5000
+        };
+        
+        const req = protocol.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    resolve(json);
+                } catch (e) {
+                    reject(new Error('Invalid JSON response'));
+                }
+            });
+        });
+        
+        req.on('error', (err) => reject(err));
+        req.on('timeout', () => {
+            req.destroy();
+            reject(new Error('Request timeout'));
+        });
+        
+        req.end();
+    });
+}
+
+// Получение списка чатов из БД через api.php
+async function getChatsFromDB(phone) {
+    try {
+        const result = await callApi('get_chats', { my_phone: phone });
+        if (result && !result.error) {
+            // Добавляем статус онлайн из WebSocket памяти
+            return result.map(chat => {
+                if (chat.type === 'user') {
+                    chat.is_online = onlineUsers.has(chat.id);
+                }
+                return chat;
+            });
+        }
+        return [];
+    } catch (error) {
+        console.error('Ошибка getChatsFromDB:', error.message);
+        return [];
+    }
+}
 
 const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
@@ -14,46 +80,13 @@ const io = new Server(server, {
     transports: ['websocket', 'polling']
 });
 
-// ТЕСТОВЫЕ ЧАТЫ (с правильными путями к аватаркам)
-const testChats = [
-    {
-        id: '79069119232',
-        type: 'user',
-        name: 'Roman',
-        avatar: 'https://lexchat.rf.gd/uploads/avatars/default.png',
-        last_message: 'Привет! Как дела?',
-        last_time: Math.floor(Date.now() / 1000),
-        unread: false,
-        is_online: true
-    },
-    {
-        id: '79135711627',
-        type: 'user',
-        name: 'Валентина',
-        avatar: 'https://lexchat.rf.gd/uploads/avatars/default.png',
-        last_message: 'Добрый вечер!',
-        last_time: Math.floor(Date.now() / 1000) - 3600,
-        unread: false,
-        is_online: true
-    },
-    {
-        id: '777',
-        type: 'group',
-        name: '👥 Общий чат',
-        avatar: 'https://lexchat.rf.gd/uploads/group_avatars/default.png',
-        last_message: 'Всем привет!',
-        last_time: Math.floor(Date.now() / 1000) - 7200,
-        unread: false,
-        is_online: false
-    }
-];
-
 io.on('connection', (socket) => {
     console.log('✅ Клиент подключен:', socket.id);
     let userPhone = null;
     let userName = null;
 
-    socket.on('register', (data) => {
+    // Регистрация пользователя
+    socket.on('register', async (data) => {
         userPhone = data.phone;
         userName = data.name || data.phone;
         
@@ -61,6 +94,7 @@ io.on('connection', (socket) => {
         console.log(`📝 Зарегистрирован: ${userName} (${userPhone})`);
         console.log(`👥 Онлайн: ${onlineUsers.size}`);
         
+        // Рассылаем статус всем
         io.emit('user_status', { phone: userPhone, name: userName, is_online: true });
         
         // Отправляем тему
@@ -72,20 +106,27 @@ io.on('connection', (socket) => {
                 light_header_bg: '#e9edef', light_text: '#111b21', light_message_in_bg: '#ffffff',
                 light_message_out_bg: '#d9fdd3', light_input_bg: '#ffffff'
             },
-            background_url: 'https://lexchat.rf.gd/fonDefault.png'
+            background_url: '/fonDefault.png'
         });
         
-        // Отправляем чаты
-        socket.emit('chats_list', testChats);
+        // Отправляем список чатов из БД
+        const chats = await getChatsFromDB(userPhone);
+        console.log(`📋 Отправлено ${chats.length} чатов для ${userPhone}`);
+        socket.emit('chats_list', chats);
     });
     
-    // Запрос чатов
-    socket.on('get_chats', (callback) => {
+    // Запрос списка чатов
+    socket.on('get_chats', async (callback) => {
         console.log(`📋 Запрос get_chats от ${userPhone}`);
+        if (!userPhone) return;
+        
+        const chats = await getChatsFromDB(userPhone);
+        console.log(`✅ Возвращаю ${chats.length} чатов`);
+        
         if (callback && typeof callback === 'function') {
-            callback(testChats);
+            callback(chats);
         } else {
-            socket.emit('chats_list', testChats);
+            socket.emit('chats_list', chats);
         }
     });
     
@@ -110,6 +151,7 @@ io.on('connection', (socket) => {
         io.emit('user_status', { phone: userPhone, name: userName, is_online: data.is_online });
     });
     
+    // Отключение
     socket.on('disconnect', () => {
         console.log('❌ Клиент отключен:', socket.id);
         if (userPhone) {
@@ -119,7 +161,7 @@ io.on('connection', (socket) => {
     });
 });
 
-// Health check для админки
+// Health check
 app.get('/healthz', (req, res) => {
     res.json({ 
         status: 'ok', 
