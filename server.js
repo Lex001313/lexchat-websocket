@@ -41,7 +41,6 @@ function log(type, message, data = null) {
   if (data) {
     console.log(`  └─ ${JSON.stringify(data)}`);
   }
-  // Считаем команды
   if (type === 'COMMAND') {
     const cmd = message.split(' ')[0];
     stats.commands[cmd] = (stats.commands[cmd] || 0) + 1;
@@ -122,6 +121,87 @@ app.get('/stats', (req, res) => {
   });
 });
 
+// ========== HTTP ЭНДПОИНТ ДЛЯ РАССЫЛКИ ИЗ АДМИНКИ ==========
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Эндпоинт для отправки рассылки через WS
+app.post('/api/broadcast', (req, res) => {
+  const { broadcast_id, message, from_phone } = req.body;
+  log('API', 'Broadcast request received', { broadcast_id, from_phone });
+  
+  if (!broadcast_id || !message) {
+    return res.status(400).json({ error: 'Missing broadcast_id or message' });
+  }
+  
+  const sent = broadcastToAll('new_broadcast', {
+    broadcast_id: parseInt(broadcast_id),
+    message: message,
+    from_phone: from_phone || 'admin'
+  });
+  
+  res.json({ success: true, sent: sent });
+});
+
+// Эндпоинт для обновления настроек fallback
+app.post('/api/polling_settings', (req, res) => {
+  const settings = req.body;
+  log('API', 'Polling settings update', settings);
+  
+  broadcastToAll('new_polling_settings', {
+    chats_poll_interval: settings.chats_poll_interval,
+    broadcast_poll_interval: settings.broadcast_poll_interval,
+    messages_poll_interval_fallback: settings.messages_poll_interval_fallback,
+    disable_groups: settings.disable_groups
+  });
+  
+  res.json({ success: true });
+});
+
+// Эндпоинт для обновления цветов
+app.post('/api/colors', (req, res) => {
+  const { colors } = req.body;
+  log('API', 'Colors update', colors);
+  
+  broadcastToAll('new_colors', { colors: colors });
+  
+  res.json({ success: true });
+});
+
+// Эндпоинт для переключения групп
+app.post('/api/groups_toggle', (req, res) => {
+  const { enabled } = req.body;
+  log('API', 'Groups toggle', { enabled });
+  
+  broadcastToAll('groups_toggle', { enabled: enabled === true || enabled === 1 });
+  
+  res.json({ success: true });
+});
+
+// Эндпоинт для обновления аватара (уведомление)
+app.post('/api/avatar_update', (req, res) => {
+  const { phone, avatar } = req.body;
+  log('API', 'Avatar update', { phone });
+  
+  broadcastToAll('new_avatar', { phone: phone, avatar: avatar }, phone);
+  
+  res.json({ success: true });
+});
+
+// Эндпоинт для обновления чатов
+app.post('/api/chats_update', (req, res) => {
+  const { to, reason } = req.body;
+  log('API', 'Chats update', { to, reason });
+  
+  if (to) {
+    sendToUser(to, 'new_chats', { reason: reason || 'update' });
+  } else {
+    broadcastToAll('new_chats', { reason: reason || 'update' });
+  }
+  
+  res.json({ success: true });
+});
+
 // ========== SOCKET.IO ==========
 io.on('connection', (socket) => {
   stats.totalConnections++;
@@ -135,7 +215,6 @@ io.on('connection', (socket) => {
     userPhone = data.phone;
     userName = data.name || data.phone;
     
-    // Удаляем старую сессию если была
     const oldSocketId = onlineUsers.get(userPhone);
     if (oldSocketId && oldSocketId !== socket.id) {
       const oldSocket = io.sockets.sockets.get(oldSocketId);
@@ -151,14 +230,12 @@ io.on('connection', (socket) => {
     
     log('REGISTER', `✅ ${userName} (${userPhone}) online. Total: ${onlineUsers.size}`);
     
-    // Подтверждение регистрации
     socket.emit('registered', { 
       success: true, 
       phone: userPhone,
       name: userName
     });
     
-    // Оповещаем всех об изменении статуса
     broadcastToAll('user_status', {
       phone: userPhone,
       name: userName,
@@ -167,45 +244,45 @@ io.on('connection', (socket) => {
   });
 
   // ========== ЛИЧНОЕ СООБЩЕНИЕ ==========
-socket.on('send_message', (data) => {
+  socket.on('send_message', (data) => {
     log('COMMAND', `send_message from ${data.from} to ${data.to}`);
     
     const messageData = {
-        type: 'private',
-        from: data.from,
-        from_name: userNames.get(data.from) || data.from,
-        text: data.text || null,
-        msg_id: data.msg_id || Date.now(),
-        time: Math.floor(Date.now() / 1000),
-        file: data.file || null,
-        audio: data.audio || null,
-        data: data.data || null
+      type: 'private',
+      from: data.from,
+      from_name: userNames.get(data.from) || data.from,
+      text: data.text || null,
+      msg_id: data.msg_id || Date.now(),
+      time: Math.floor(Date.now() / 1000),
+      file: data.file || null,
+      audio: data.audio || null,
+      data: data.data || null
     };
     
     const sent = sendToUser(data.to, 'new_message', messageData);
     
     socket.emit('message_sent', { 
-        success: true, 
-        msg_id: data.msg_id,
-        delivered: sent
+      success: true, 
+      msg_id: data.msg_id,
+      delivered: sent
     });
-});
+  });
 
-// ========== ГРУППОВОЕ СООБЩЕНИЕ ==========
-socket.on('send_group_message', (data) => {
+  // ========== ГРУППОВОЕ СООБЩЕНИЕ ==========
+  socket.on('send_group_message', (data) => {
     log('COMMAND', `send_group_message from ${data.from} to group ${data.group_id}`);
     
     const messageData = {
-        type: 'group',
-        group_id: data.group_id,
-        from: data.from,
-        from_name: userNames.get(data.from) || data.from,
-        text: data.text || null,
-        msg_id: data.msg_id || Date.now(),
-        time: Math.floor(Date.now() / 1000),
-        file: data.file || null,
-        audio: data.audio || null,
-        data: data.data || null
+      type: 'group',
+      group_id: data.group_id,
+      from: data.from,
+      from_name: userNames.get(data.from) || data.from,
+      text: data.text || null,
+      msg_id: data.msg_id || Date.now(),
+      time: Math.floor(Date.now() / 1000),
+      file: data.file || null,
+      audio: data.audio || null,
+      data: data.data || null
     };
     
     io.to(`group_${data.group_id}`).emit('new_message', messageData);
@@ -213,11 +290,12 @@ socket.on('send_group_message', (data) => {
     log('GROUP', `Message sent to room group_${data.group_id}`, messageData);
     
     socket.emit('message_sent', { 
-        success: true, 
-        msg_id: data.msg_id,
-        group_id: data.group_id
+      success: true, 
+      msg_id: data.msg_id,
+      group_id: data.group_id
     });
-});
+  });
+  
   // ========== УДАЛЕНИЕ СООБЩЕНИЯ ==========
   socket.on('delete_message', (data) => {
     log('COMMAND', `delete_message ${data.msg_id} from ${data.from}`);
@@ -287,7 +365,9 @@ socket.on('send_group_message', (data) => {
     });
   });
 
-  // ========== НОВАЯ РАССЫЛКА (админ) ==========
+  // ========== НОВАЯ РАССЫЛКА (через HTTP эндпоинт) ==========
+  // Этот эндпоинт теперь обрабатывается через POST /api/broadcast
+  // Оставляем для обратной совместимости
   socket.on('new_broadcast', (data) => {
     log('COMMAND', `new_broadcast from ${data.from_phone}`);
     broadcastToAll('new_broadcast', {
@@ -363,7 +443,6 @@ socket.on('send_group_message', (data) => {
     socket.join(roomName);
     log('GROUP', `${userPhone || socket.id} joined room ${roomName}`);
     
-    // Обновляем кэш участников
     if (!groupMembers.has(data.group_id)) {
       groupMembers.set(data.group_id, new Set());
     }
@@ -384,7 +463,6 @@ socket.on('send_group_message', (data) => {
 
   // ========== ПОНГ (ответ на пинг) ==========
   socket.on('pong', () => {
-    // Просто логируем для отладки
     log('PONG', `from ${userPhone || socket.id}`);
   });
 
@@ -395,8 +473,6 @@ socket.on('send_group_message', (data) => {
     if (userPhone) {
       onlineUsers.delete(userPhone);
       userSockets.delete(socket.id);
-      
-      // Не удаляем имя из userNames (может понадобиться при переподключении)
       
       broadcastToAll('user_status', {
         phone: userPhone,
@@ -411,18 +487,19 @@ socket.on('send_group_message', (data) => {
 server.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║                    🚀 LexChat WebSocket Server v2.0 (Socket.IO)               ║
+║                    🚀 LexChat WebSocket Server v2.1 (Socket.IO)               ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
 ║  HTTP Server:  http://localhost:${PORT}                                         ║
 ║  Health check: http://localhost:${PORT}/healthz                                 ║
 ║  Stats:         http://localhost:${PORT}/stats                                  ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
-║  Поддерживаемые команды:                                                      ║
-║  ├─ register, send_message, send_group_message, delete_message                ║
-║  ├─ typing_start, typing_stop, group_typing_start, group_typing_stop          ║
-║  ├─ mark_read, new_broadcast, new_polling_settings, new_colors                ║
-║  ├─ new_avatar, groups_toggle, new_chats, get_status, join_group              ║
-║  ├─ leave_group, pong                                                         ║
+║  API Endpoints:                                                               ║
+║  ├─ POST /api/broadcast     - отправка рассылки                               ║
+║  ├─ POST /api/colors        - обновление цветов                               ║
+║  ├─ POST /api/groups_toggle - включение/отключение групп                      ║
+║  ├─ POST /api/polling_settings - настройки fallback                          ║
+║  ├─ POST /api/avatar_update - обновление аватара                             ║
+║  └─ POST /api/chats_update  - обновление чатов                               ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
 ║  Статус:         ✅ Сервер запущен                                             ║
 ║  Порт:           ${PORT}                                                         ║
