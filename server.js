@@ -202,6 +202,27 @@ app.get('/stats', (req, res) => {
   });
 });
 
+
+// Добавьте после других app.get
+app.get('/test-api', async (req, res) => {
+  const https = require('https');
+  const url = 'https://lexchat.rf.gd/api.php?action=get_chats&my_phone=78888888888';
+  
+  https.get(url, (response) => {
+    let data = '';
+    response.on('data', chunk => data += chunk);
+    response.on('end', () => {
+      res.json({
+        statusCode: response.statusCode,
+        headers: response.headers,
+        dataPreview: data.substring(0, 500)
+      });
+    });
+  }).on('error', (err) => {
+    res.json({ error: err.message });
+  });
+});
+
 // ========== ЗАПУСК СЕРВЕРА ==========
 server.listen(PORT, () => {
   console.log(`\n🚀 WebSocket сервер запущен на порту ${PORT}`);
