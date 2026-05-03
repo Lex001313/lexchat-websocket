@@ -167,28 +167,29 @@ io.on('connection', (socket) => {
   });
 
   // ========== ЛИЧНОЕ СООБЩЕНИЕ ==========
-  socket.on('send_message', (data) => {
+socket.on('send_message', (data) => {
     log('COMMAND', `send_message from ${data.from} to ${data.to}`);
     
-    // Отправляем получателю (если онлайн)
-    const sent = sendToUser(data.to, 'new_message', {
-      type: 'private',
-      from: data.from,
-      from_name: userNames.get(data.from) || data.from,
-      text: data.text,
-      msg_id: data.msg_id || Date.now(),
-      time: Math.floor(Date.now() / 1000),
-      file: data.file || null,
-      audio: data.audio || null
-    });
+    const messageData = {
+        type: 'private',
+        from: data.from,
+        from_name: userNames.get(data.from) || data.from,
+        text: data.text || null,
+        msg_id: data.msg_id || Date.now(),
+        time: Math.floor(Date.now() / 1000),
+        file: data.file || null,
+        audio: data.audio || null,
+        data: data.data || null
+    };
     
-    // Подтверждение отправителю
+    const sent = sendToUser(data.to, 'new_message', messageData);
+    
     socket.emit('message_sent', { 
-      success: true, 
-      msg_id: data.msg_id,
-      delivered: sent
+        success: true, 
+        msg_id: data.msg_id,
+        delivered: sent
     });
-  });
+});
 
 // ========== ГРУППОВОЕ СООБЩЕНИЕ ==========
 socket.on('send_group_message', (data) => {
@@ -199,14 +200,14 @@ socket.on('send_group_message', (data) => {
         group_id: data.group_id,
         from: data.from,
         from_name: userNames.get(data.from) || data.from,
-        text: data.text,
+        text: data.text || null,
         msg_id: data.msg_id || Date.now(),
         time: Math.floor(Date.now() / 1000),
         file: data.file || null,
-        audio: data.audio || null
+        audio: data.audio || null,
+        data: data.data || null
     };
     
-    // Отправляем ВСЕМ в комнате группы (включая отправителя)
     io.to(`group_${data.group_id}`).emit('new_message', messageData);
     
     log('GROUP', `Message sent to room group_${data.group_id}`, messageData);
@@ -217,7 +218,6 @@ socket.on('send_group_message', (data) => {
         group_id: data.group_id
     });
 });
-
   // ========== УДАЛЕНИЕ СООБЩЕНИЯ ==========
   socket.on('delete_message', (data) => {
     log('COMMAND', `delete_message ${data.msg_id} from ${data.from}`);
