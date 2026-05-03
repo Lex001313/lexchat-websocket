@@ -6,7 +6,6 @@ const app = express();
 const server = createServer(app);
 const PORT = process.env.PORT || 10000;
 
-// Хранилище онлайн пользователей
 const onlineUsers = new Map();
 
 const io = new Server(server, {
@@ -15,12 +14,45 @@ const io = new Server(server, {
     transports: ['websocket', 'polling']
 });
 
+// ТЕСТОВЫЕ ЧАТЫ (с правильными путями к аватаркам)
+const testChats = [
+    {
+        id: '79069119232',
+        type: 'user',
+        name: 'Roman',
+        avatar: 'https://lexchat.rf.gd/uploads/avatars/default.png',
+        last_message: 'Привет! Как дела?',
+        last_time: Math.floor(Date.now() / 1000),
+        unread: false,
+        is_online: true
+    },
+    {
+        id: '79135711627',
+        type: 'user',
+        name: 'Валентина',
+        avatar: 'https://lexchat.rf.gd/uploads/avatars/default.png',
+        last_message: 'Добрый вечер!',
+        last_time: Math.floor(Date.now() / 1000) - 3600,
+        unread: false,
+        is_online: true
+    },
+    {
+        id: '777',
+        type: 'group',
+        name: '👥 Общий чат',
+        avatar: 'https://lexchat.rf.gd/uploads/group_avatars/default.png',
+        last_message: 'Всем привет!',
+        last_time: Math.floor(Date.now() / 1000) - 7200,
+        unread: false,
+        is_online: false
+    }
+];
+
 io.on('connection', (socket) => {
     console.log('✅ Клиент подключен:', socket.id);
     let userPhone = null;
     let userName = null;
 
-    // Регистрация
     socket.on('register', (data) => {
         userPhone = data.phone;
         userName = data.name || data.phone;
@@ -29,10 +61,9 @@ io.on('connection', (socket) => {
         console.log(`📝 Зарегистрирован: ${userName} (${userPhone})`);
         console.log(`👥 Онлайн: ${onlineUsers.size}`);
         
-        // Рассылаем статус всем
         io.emit('user_status', { phone: userPhone, name: userName, is_online: true });
         
-        // Отправляем текущую тему
+        // Отправляем тему
         socket.emit('theme_settings', {
             colors: {
                 dark_bg: '#0a0f12', dark_sidebar_bg: '#111b21', dark_header_bg: '#202c33',
@@ -41,37 +72,16 @@ io.on('connection', (socket) => {
                 light_header_bg: '#e9edef', light_text: '#111b21', light_message_in_bg: '#ffffff',
                 light_message_out_bg: '#d9fdd3', light_input_bg: '#ffffff'
             },
-            background_url: '/fonDefault.png'
+            background_url: 'https://lexchat.rf.gd/fonDefault.png'
         });
+        
+        // Отправляем чаты
+        socket.emit('chats_list', testChats);
     });
     
-    // ЗАПРОС СПИСКА ЧАТОВ — ВОЗВРАЩАЕМ ТЕСТОВЫЕ ДАННЫЕ
+    // Запрос чатов
     socket.on('get_chats', (callback) => {
         console.log(`📋 Запрос get_chats от ${userPhone}`);
-        // ВРЕМЕННО: возвращаем тестовые чаты
-        const testChats = [
-            {
-                id: '79069119232',
-                type: 'user',
-                name: 'Roman',
-                avatar: 'uploads/avatars/default.png',
-                last_message: 'Привет!',
-                last_time: Math.floor(Date.now() / 1000),
-                unread: false,
-                is_online: true
-            },
-            {
-                id: '79135711627',
-                type: 'user',
-                name: 'Валентина',
-                avatar: 'uploads/avatars/default.png',
-                last_message: 'Как дела?',
-                last_time: Math.floor(Date.now() / 1000) - 3600,
-                unread: false,
-                is_online: true
-            }
-        ];
-        
         if (callback && typeof callback === 'function') {
             callback(testChats);
         } else {
@@ -94,7 +104,12 @@ io.on('connection', (socket) => {
         }
     });
     
-    // Отключение
+    // Обновление статуса
+    socket.on('update_status', (data) => {
+        console.log(`🟢 ${userPhone} ${data.is_online ? 'онлайн' : 'оффлайн'}`);
+        io.emit('user_status', { phone: userPhone, name: userName, is_online: data.is_online });
+    });
+    
     socket.on('disconnect', () => {
         console.log('❌ Клиент отключен:', socket.id);
         if (userPhone) {
@@ -104,11 +119,24 @@ io.on('connection', (socket) => {
     });
 });
 
-// Health check
+// Health check для админки
 app.get('/healthz', (req, res) => {
-    res.json({ status: 'ok', connections: io.engine.clientsCount, online: onlineUsers.size });
+    res.json({ 
+        status: 'ok', 
+        connections: io.engine.clientsCount,
+        online: onlineUsers.size
+    });
+});
+
+// Статистика
+app.get('/stats', (req, res) => {
+    res.json({
+        online: onlineUsers.size,
+        connections: io.engine.clientsCount
+    });
 });
 
 server.listen(PORT, () => {
     console.log(`🚀 WebSocket сервер запущен на порту ${PORT}`);
+    console.log(`📡 Health check: /healthz`);
 });
