@@ -3,7 +3,7 @@ const WebSocket = require('ws');
 const cors = require('cors');
 
 // ========== НАСТРОЙКИ ==========
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // Хранилища
 const onlineUsers = new Map();     // phone -> { ws, name, lastSeen, ip }
