@@ -190,26 +190,33 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ========== ГРУППОВОЕ СООБЩЕНИЕ ==========
-  socket.on('send_group_message', (data) => {
+// ========== ГРУППОВОЕ СООБЩЕНИЕ ==========
+socket.on('send_group_message', (data) => {
     log('COMMAND', `send_group_message from ${data.from} to group ${data.group_id}`);
     
-    socket.to(`group_${data.group_id}`).emit('new_group_message', {
-      from: data.from,
-      from_name: userNames.get(data.from) || data.from,
-      text: data.text,
-      msg_id: data.msg_id || Date.now(),
-      time: Math.floor(Date.now() / 1000),
-      file: data.file || null,
-      audio: data.audio || null
-    });
+    const messageData = {
+        type: 'group',
+        group_id: data.group_id,
+        from: data.from,
+        from_name: userNames.get(data.from) || data.from,
+        text: data.text,
+        msg_id: data.msg_id || Date.now(),
+        time: Math.floor(Date.now() / 1000),
+        file: data.file || null,
+        audio: data.audio || null
+    };
+    
+    // Отправляем ВСЕМ в комнате группы (включая отправителя)
+    io.to(`group_${data.group_id}`).emit('new_message', messageData);
+    
+    log('GROUP', `Message sent to room group_${data.group_id}`, messageData);
     
     socket.emit('message_sent', { 
-      success: true, 
-      msg_id: data.msg_id,
-      group_id: data.group_id
+        success: true, 
+        msg_id: data.msg_id,
+        group_id: data.group_id
     });
-  });
+});
 
   // ========== УДАЛЕНИЕ СООБЩЕНИЯ ==========
   socket.on('delete_message', (data) => {
