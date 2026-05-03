@@ -21,74 +21,238 @@ const io = new Server(server, {
   }
 });
 
-// Хранилища
+// ========== ХРАНИЛИЩА ==========
 const onlineUsers = new Map();        // phone -> socket.id
-const userNames = new Map();           // phone -> name
-const typingUsers = new Map();         // phone -> { to, timeout }
+const userNames = new Map();          // phone -> name
+const userSockets = new Map();        // socket.id -> phone
+const groupMembers = new Map();       // group_id -> Set(phones)
 
+// ========== СТАТИСТИКА ДЛЯ ОТЛАДКИ ==========
+const stats = {
+  totalConnections: 0,
+  messagesProcessed: 0,
+  commands: {},
+  startTime: Date.now()
+};
+
+function log(type, message, data = null) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [${type}] ${message}`);
+  if (data) {
+    console.log(`  └─ ${JSON.stringify(data)}`);
+  }
+  // Считаем команды
+  if (type === 'COMMAND') {
+    const cmd = message.split(' ')[0];
+    stats.commands[cmd] = (stats.commands[cmd] || 0) + 1;
+    stats.messagesProcessed++;
+  }
+}
+
+// ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+function broadcastToAll(event, data, excludePhone = null) {
+  let sent = 0;
+  onlineUsers.forEach((socketId, phone) => {
+    if (excludePhone !== phone) {
+      const socket = io.sockets.sockets.get(socketId);
+      if (socket) {
+        socket.emit(event, data);
+        sent++;
+      }
+    }
+  });
+  log('BROADCAST', `${event} -> ${sent} clients`, data);
+  return sent;
+}
+
+function sendToUser(phone, event, data) {
+  const socketId = onlineUsers.get(phone);
+  if (socketId) {
+    const socket = io.sockets.sockets.get(socketId);
+    if (socket) {
+      socket.emit(event, data);
+      log('SEND', `${event} -> ${phone}`, data);
+      return true;
+    }
+  }
+  log('SEND', `${event} -> ${phone} (offline)`, data);
+  return false;
+}
+
+function broadcastToGroup(groupId, event, data, excludePhone = null) {
+  const members = groupMembers.get(groupId);
+  if (!members) return 0;
+  
+  let sent = 0;
+  members.forEach(phone => {
+    if (excludePhone !== phone) {
+      if (sendToUser(phone, event, { ...data, group_id: groupId })) sent++;
+    }
+  });
+  log('GROUP', `${event} -> group ${groupId} (${sent}/${members.size} members)`, data);
+  return sent;
+}
+
+// ========== HEALTH CHECK ==========
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok', 
+    connections: io.engine.clientsCount,
+    online: onlineUsers.size,
+    uptime: Math.floor((Date.now() - stats.startTime) / 1000),
+    stats: {
+      totalMessages: stats.messagesProcessed,
+      commands: stats.commands,
+      totalConnections: stats.totalConnections
+    }
+  });
+});
+
+app.get('/stats', (req, res) => {
+  res.json({
+    online: onlineUsers.size,
+    connections: io.engine.clientsCount,
+    uptime: Math.floor((Date.now() - stats.startTime) / 1000),
+    commands: stats.commands,
+    users: Array.from(onlineUsers.entries()).map(([phone, sid]) => ({
+      phone,
+      name: userNames.get(phone),
+      socketId: sid
+    }))
+  });
+});
+
+// ========== SOCKET.IO ==========
 io.on('connection', (socket) => {
-  console.log('✅ Клиент подключен:', socket.id);
+  stats.totalConnections++;
+  log('CONNECT', `Client ${socket.id} connected (total: ${onlineUsers.size})`);
   
   let userPhone = null;
   let userName = null;
 
-  // Регистрация пользователя
+  // ========== РЕГИСТРАЦИЯ ==========
   socket.on('register', (data) => {
     userPhone = data.phone;
     userName = data.name || data.phone;
-    userNames.set(userPhone, userName);
-    onlineUsers.set(userPhone, socket.id);
     
-    console.log(`📝 Зарегистрирован: ${userName} (${userPhone})`);
-    console.log(`👥 Онлайн: ${onlineUsers.size} пользователей`);
-    
-    // Рассылаем всем обновлённый статус
-    io.emit('user_status', { phone: userPhone, name: userName, is_online: true });
-  });
-
-  // Отправка сообщения
-  socket.on('send_message', (data) => {
-    console.log(`📨 Сообщение от ${data.from} к ${data.to || 'group_' + data.group_id}`);
-    
-    if (data.type === 'private' && data.to) {
-      const targetSocketId = onlineUsers.get(data.to);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('new_message', data);
+    // Удаляем старую сессию если была
+    const oldSocketId = onlineUsers.get(userPhone);
+    if (oldSocketId && oldSocketId !== socket.id) {
+      const oldSocket = io.sockets.sockets.get(oldSocketId);
+      if (oldSocket) {
+        oldSocket.disconnect(true);
+        log('REGISTER', `Replaced old session for ${userPhone}`);
       }
     }
     
-    if (data.type === 'group' && data.group_id) {
-      socket.to(`group_${data.group_id}`).emit('new_message', data);
-    }
+    onlineUsers.set(userPhone, socket.id);
+    userNames.set(userPhone, userName);
+    userSockets.set(socket.id, userPhone);
     
-    socket.emit('message_sent', { id: Date.now(), ...data });
+    log('REGISTER', `✅ ${userName} (${userPhone}) online. Total: ${onlineUsers.size}`);
+    
+    // Подтверждение регистрации
+    socket.emit('registered', { 
+      success: true, 
+      phone: userPhone,
+      name: userName
+    });
+    
+    // Оповещаем всех об изменении статуса
+    broadcastToAll('user_status', {
+      phone: userPhone,
+      name: userName,
+      is_online: true
+    }, userPhone);
   });
 
-  // ========== СТАТУС ПЕЧАТИ ==========
-  socket.on('typing_start', (data) => {
-    const targetSocketId = onlineUsers.get(data.to);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('user_typing', {
+  // ========== ЛИЧНОЕ СООБЩЕНИЕ ==========
+  socket.on('send_message', (data) => {
+    log('COMMAND', `send_message from ${data.from} to ${data.to}`);
+    
+    // Отправляем получателю (если онлайн)
+    const sent = sendToUser(data.to, 'new_message', {
+      type: 'private',
+      from: data.from,
+      from_name: userNames.get(data.from) || data.from,
+      text: data.text,
+      msg_id: data.msg_id || Date.now(),
+      time: Math.floor(Date.now() / 1000),
+      file: data.file || null,
+      audio: data.audio || null
+    });
+    
+    // Подтверждение отправителю
+    socket.emit('message_sent', { 
+      success: true, 
+      msg_id: data.msg_id,
+      delivered: sent
+    });
+  });
+
+  // ========== ГРУППОВОЕ СООБЩЕНИЕ ==========
+  socket.on('send_group_message', (data) => {
+    log('COMMAND', `send_group_message from ${data.from} to group ${data.group_id}`);
+    
+    socket.to(`group_${data.group_id}`).emit('new_group_message', {
+      from: data.from,
+      from_name: userNames.get(data.from) || data.from,
+      text: data.text,
+      msg_id: data.msg_id || Date.now(),
+      time: Math.floor(Date.now() / 1000),
+      file: data.file || null,
+      audio: data.audio || null
+    });
+    
+    socket.emit('message_sent', { 
+      success: true, 
+      msg_id: data.msg_id,
+      group_id: data.group_id
+    });
+  });
+
+  // ========== УДАЛЕНИЕ СООБЩЕНИЯ ==========
+  socket.on('delete_message', (data) => {
+    log('COMMAND', `delete_message ${data.msg_id} from ${data.from}`);
+    
+    if (data.type === 'private') {
+      sendToUser(data.to, 'delete_message', {
+        msg_id: data.msg_id,
+        from: data.from
+      });
+    } else if (data.type === 'group') {
+      socket.to(`group_${data.group_id}`).emit('delete_message', {
+        msg_id: data.msg_id,
         from: data.from,
-        from_name: userNames.get(data.from) || data.from,
-        is_typing: true
+        group_id: data.group_id
       });
     }
+    
+    socket.emit('message_deleted', { success: true, msg_id: data.msg_id });
+  });
+
+  // ========== ПЕЧАТАЕТ (личный чат) ==========
+  socket.on('typing_start', (data) => {
+    log('COMMAND', `typing_start from ${data.from} to ${data.to}`);
+    sendToUser(data.to, 'user_typing', {
+      from: data.from,
+      from_name: userNames.get(data.from) || data.from,
+      is_typing: true
+    });
   });
 
   socket.on('typing_stop', (data) => {
-    const targetSocketId = onlineUsers.get(data.to);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('user_typing', {
-        from: data.from,
-        from_name: userNames.get(data.from) || data.from,
-        is_typing: false
-      });
-    }
+    log('COMMAND', `typing_stop from ${data.from} to ${data.to}`);
+    sendToUser(data.to, 'user_typing', {
+      from: data.from,
+      from_name: userNames.get(data.from) || data.from,
+      is_typing: false
+    });
   });
 
-  // ========== СТАТУС ПЕЧАТИ В ГРУППЕ ==========
+  // ========== ПЕЧАТАЕТ (групповой чат) ==========
   socket.on('group_typing_start', (data) => {
+    log('COMMAND', `group_typing_start from ${data.from} in group ${data.group_id}`);
     socket.to(`group_${data.group_id}`).emit('group_typing', {
       from: data.from,
       from_name: userNames.get(data.from) || data.from,
@@ -98,6 +262,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('group_typing_stop', (data) => {
+    log('COMMAND', `group_typing_stop from ${data.from} in group ${data.group_id}`);
     socket.to(`group_${data.group_id}`).emit('group_typing', {
       from: data.from,
       from_name: userNames.get(data.from) || data.from,
@@ -106,52 +271,155 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ========== ОБНОВЛЕНИЕ СТАТУСА ОНЛАЙН ==========
-  socket.on('update_status', (data) => {
-    if (data.is_online) {
-      onlineUsers.set(userPhone, socket.id);
-    } else {
-      onlineUsers.delete(userPhone);
-    }
-    io.emit('user_status', { 
-      phone: userPhone, 
-      name: userNames.get(userPhone) || userPhone,
-      is_online: data.is_online 
+  // ========== ОТМЕТКА О ПРОЧТЕНИИ ==========
+  socket.on('mark_read', (data) => {
+    log('COMMAND', `mark_read from ${data.from} chat with ${data.to}`);
+    sendToUser(data.to, 'messages_read', {
+      by: data.from,
+      msg_ids: data.msg_ids || []
     });
   });
 
-  // Пинг
-  socket.on('ping', () => {
-    socket.emit('pong');
+  // ========== НОВАЯ РАССЫЛКА (админ) ==========
+  socket.on('new_broadcast', (data) => {
+    log('COMMAND', `new_broadcast from ${data.from_phone}`);
+    broadcastToAll('new_broadcast', {
+      broadcast_id: data.broadcast_id,
+      message: data.message,
+      from_phone: data.from_phone
+    });
   });
 
-  // Отключение
-  socket.on('disconnect', () => {
-    console.log('❌ Клиент отключен:', socket.id);
+  // ========== НОВЫЕ НАСТРОЙКИ (админ) ==========
+  socket.on('new_polling_settings', (data) => {
+    log('COMMAND', `new_polling_settings: chats=${data.chats_poll_interval}, fallback=${data.messages_poll_interval_fallback}`);
+    broadcastToAll('new_polling_settings', {
+      chats_poll_interval: data.chats_poll_interval,
+      broadcast_poll_interval: data.broadcast_poll_interval,
+      messages_poll_interval_fallback: data.messages_poll_interval_fallback,
+      disable_groups: data.disable_groups
+    });
+  });
+
+  // ========== НОВЫЕ ЦВЕТА (админ) ==========
+  socket.on('new_colors', (data) => {
+    log('COMMAND', `new_colors from ${data.by || 'admin'}`);
+    broadcastToAll('new_colors', {
+      colors: data.colors
+    });
+  });
+
+  // ========== НОВАЯ АВАТАРКА ==========
+  socket.on('new_avatar', (data) => {
+    log('COMMAND', `new_avatar for ${data.phone}`);
+    broadcastToAll('new_avatar', {
+      phone: data.phone,
+      avatar: data.avatar
+    }, data.phone);
+  });
+
+  // ========== ПЕРЕКЛЮЧЕНИЕ ГРУПП (админ) ==========
+  socket.on('groups_toggle', (data) => {
+    log('COMMAND', `groups_toggle: enabled=${data.enabled}`);
+    broadcastToAll('groups_toggle', {
+      enabled: data.enabled
+    });
+  });
+
+  // ========== ОБНОВЛЕНИЕ СПИСКА ЧАТОВ ==========
+  socket.on('new_chats', (data) => {
+    log('COMMAND', `new_chats: reason=${data.reason}`);
+    if (data.to) {
+      sendToUser(data.to, 'new_chats', {
+        reason: data.reason || 'update'
+      });
+    } else {
+      broadcastToAll('new_chats', {
+        reason: data.reason || 'update'
+      });
+    }
+  });
+
+  // ========== ЗАПРОС СТАТУСА ==========
+  socket.on('get_status', (data) => {
+    const isOnline = onlineUsers.has(data.phone);
+    socket.emit('user_status', {
+      phone: data.phone,
+      name: userNames.get(data.phone) || data.phone,
+      is_online: isOnline
+    });
+  });
+
+  // ========== ПРИСОЕДИНЕНИЕ К КОМНАТЕ ГРУППЫ ==========
+  socket.on('join_group', (data) => {
+    const roomName = `group_${data.group_id}`;
+    socket.join(roomName);
+    log('GROUP', `${userPhone || socket.id} joined room ${roomName}`);
+    
+    // Обновляем кэш участников
+    if (!groupMembers.has(data.group_id)) {
+      groupMembers.set(data.group_id, new Set());
+    }
+    if (userPhone) {
+      groupMembers.get(data.group_id).add(userPhone);
+    }
+  });
+
+  socket.on('leave_group', (data) => {
+    const roomName = `group_${data.group_id}`;
+    socket.leave(roomName);
+    log('GROUP', `${userPhone || socket.id} left room ${roomName}`);
+    
+    if (userPhone && groupMembers.has(data.group_id)) {
+      groupMembers.get(data.group_id).delete(userPhone);
+    }
+  });
+
+  // ========== ПОНГ (ответ на пинг) ==========
+  socket.on('pong', () => {
+    // Просто логируем для отладки
+    log('PONG', `from ${userPhone || socket.id}`);
+  });
+
+  // ========== ОТКЛЮЧЕНИЕ ==========
+  socket.on('disconnect', (reason) => {
+    log('DISCONNECT', `${userPhone || socket.id} disconnected. Reason: ${reason}`);
+    
     if (userPhone) {
       onlineUsers.delete(userPhone);
-      io.emit('user_status', { 
-        phone: userPhone, 
-        name: userNames.get(userPhone) || userPhone,
-        is_online: false 
+      userSockets.delete(socket.id);
+      
+      // Не удаляем имя из userNames (может понадобиться при переподключении)
+      
+      broadcastToAll('user_status', {
+        phone: userPhone,
+        name: userName,
+        is_online: false
       });
     }
   });
 });
 
-// Health check
-app.get('/healthz', (req, res) => {
-  res.status(200).json({ status: 'ok', connections: io.engine.clientsCount });
-});
-
-// Статистика
-app.get('/stats', (req, res) => {
-  res.json({
-    online: onlineUsers.size,
-    connections: io.engine.clientsCount
-  });
-});
-
+// ========== ЗАПУСК ==========
 server.listen(PORT, () => {
-  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+  console.log(`
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                    🚀 LexChat WebSocket Server v2.0 (Socket.IO)               ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║  HTTP Server:  http://localhost:${PORT}                                         ║
+║  Health check: http://localhost:${PORT}/healthz                                 ║
+║  Stats:         http://localhost:${PORT}/stats                                  ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║  Поддерживаемые команды:                                                      ║
+║  ├─ register, send_message, send_group_message, delete_message                ║
+║  ├─ typing_start, typing_stop, group_typing_start, group_typing_stop          ║
+║  ├─ mark_read, new_broadcast, new_polling_settings, new_colors                ║
+║  ├─ new_avatar, groups_toggle, new_chats, get_status, join_group              ║
+║  ├─ leave_group, pong                                                         ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║  Статус:         ✅ Сервер запущен                                             ║
+║  Порт:           ${PORT}                                                         ║
+║  WebSocket:      ✅ готов к подключениям                                       ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+  `);
 });
