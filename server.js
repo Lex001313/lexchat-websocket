@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 10000;
 const onlineUsers = new Map();
 
 // Функция запроса к api.php на вашем хостинге
-function callApi(endpoint, params = {}) {
+async function callApi(endpoint, params = {}) {
     return new Promise((resolve, reject) => {
         const url = new URL('https://lexchat.rf.gd/api.php');
         url.searchParams.append('action', endpoint);
@@ -58,7 +58,7 @@ function callApi(endpoint, params = {}) {
 async function getChatsFromDB(phone) {
     try {
         const result = await callApi('get_chats', { my_phone: phone });
-        if (result && !result.error) {
+        if (result && !result.error && Array.isArray(result)) {
             // Добавляем статус онлайн из WebSocket памяти
             return result.map(chat => {
                 if (chat.type === 'user') {
