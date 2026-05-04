@@ -460,11 +460,19 @@ io.on('connection', (socket) => {
       groupMembers.get(data.group_id).delete(userPhone);
     }
   });
+  
+  // ========== ПИНГ-ПОНГ ДЛЯ ПРОВЕРКИ ЖИЗНИ ==========
+socket.on('ping', () => {
+    socket.emit('pong');
+});
 
   // ========== ПОНГ (ответ на пинг) ==========
   socket.on('pong', () => {
     log('PONG', `from ${userPhone || socket.id}`);
   });
+  
+  
+  
 
   // ========== ОТКЛЮЧЕНИЕ ==========
   socket.on('disconnect', (reason) => {
