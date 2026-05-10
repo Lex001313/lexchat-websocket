@@ -202,6 +202,13 @@ app.post('/api/chats_update', (req, res) => {
   res.json({ success: true });
 });
 
+//Эндпоинт для обновления настроек звонков
+app.post('/api/calls_settings', (req, res) => {
+    const settings = req.body;
+    broadcastToAll('calls_settings_updated', settings);
+    res.json({ success: true });
+});
+
 // ========== SOCKET.IO ==========
 io.on('connection', (socket) => {
   stats.totalConnections++;
@@ -489,6 +496,37 @@ socket.on('ping', () => {
       });
     }
   });
+  
+// ========== ЗВОНКИ: СИГНАЛИНГ ==========
+socket.on('call_start', (data) => {
+    const { to, type } = data;
+    const fromPhone = userPhone || socket.id;
+    log('CALL', `start ${type} call from ${fromPhone} to ${to}`);
+    sendToUser(to, 'incoming_call', {
+        from: fromPhone,
+        from_name: userNames.get(fromPhone) || fromPhone,
+        type: type
+    });
+});
+
+socket.on('call_offer', (data) => {
+    sendToUser(data.to, 'call_offer', { from: userPhone, offer: data.offer });
+});
+
+socket.on('call_answer', (data) => {
+    sendToUser(data.to, 'call_answer', { from: userPhone, answer: data.answer });
+});
+
+socket.on('call_ice', (data) => {
+    sendToUser(data.to, 'call_ice', { from: userPhone, candidate: data.candidate });
+});
+
+socket.on('call_hangup', (data) => {
+    sendToUser(data.to, 'call_hangup', { from: userPhone });
+});  
+  
+  
+  
 });
 
 // ========== ЗАПУСК ==========
