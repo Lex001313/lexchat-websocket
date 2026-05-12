@@ -4,6 +4,7 @@
 // License: MIT                     /
 // Copyright (c) 2026               /
 /////////////////////////////////////
+const https = require('https');
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -222,24 +223,39 @@ app.post('/api/calls_settings', (req, res) => {
 app.post('/api/send_call_push', (req, res) => {
     const { to, from, from_name, call_type } = req.body;
     
-    // Здесь нужно вызвать ваш PHP скрипт или напрямую отправить через FCM
-    // Проще всего сделать запрос к вашему API:
-    const phpUrl = 'https://lexchat.rf.gd/api.php?action=send_call_push';
+    // Используем встроенный https модуль вместо fetch
     
-    fetch(phpUrl, {
+    const url = new URL('https://lexchat.rf.gd/api.php?action=send_call_push');
+    const postData = new URLSearchParams({
+        to: to,
+        from: from,
+        from_name: from_name,
+        call_type: call_type
+    }).toString();
+    
+    const options = {
+        hostname: url.hostname,
+        path: url.pathname + url.search,
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-            to: to,
-            from: from,
-            from_name: from_name,
-            call_type: call_type
-        })
-    }).catch(e => console.error('Push error:', e));
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(postData)
+        }
+    };
+    
+    const reqHttp = https.request(options, (resp) => {
+        let data = '';
+        resp.on('data', (chunk) => { data += chunk; });
+        resp.on('end', () => {
+            console.log('Push response:', data);
+        });
+    });
+    reqHttp.on('error', (e) => console.error('Push error:', e));
+    reqHttp.write(postData);
+    reqHttp.end();
     
     res.json({ success: true });
 });
-
 
 // ========== SOCKET.IO ==========
 io.on('connection', (socket) => {
