@@ -1,3 +1,9 @@
+/////////////////////////////////////
+// Project: LexChat                 /
+// Author: R.I.Moskalenko (Lex0013) /
+// License: MIT                     /
+// Copyright (c) 2026               /
+/////////////////////////////////////
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -208,6 +214,32 @@ app.post('/api/calls_settings', (req, res) => {
     broadcastToAll('calls_settings_updated', settings);
     res.json({ success: true });
 });
+
+
+
+
+// Push
+app.post('/api/send_call_push', (req, res) => {
+    const { to, from, from_name, call_type } = req.body;
+    
+    // Здесь нужно вызвать ваш PHP скрипт или напрямую отправить через FCM
+    // Проще всего сделать запрос к вашему API:
+    const phpUrl = 'https://lexchat.rf.gd/api.php?action=send_call_push';
+    
+    fetch(phpUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+            to: to,
+            from: from,
+            from_name: from_name,
+            call_type: call_type
+        })
+    }).catch(e => console.error('Push error:', e));
+    
+    res.json({ success: true });
+});
+
 
 // ========== SOCKET.IO ==========
 io.on('connection', (socket) => {
@@ -496,6 +528,12 @@ socket.on('ping', () => {
       });
     }
   });
+  
+  
+  
+  
+  
+  
   
 // ========== ЗВОНКИ: СИГНАЛИНГ ==========
 socket.on('call_start', (data) => {
